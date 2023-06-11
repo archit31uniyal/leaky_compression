@@ -104,14 +104,29 @@ def loss_thresh(M_target, M_p, threshold_0, frac_threshold, d1, points, alpha, p
         return 0, fraction
     # return result
 
-def loss_attack_per_sample(M_target, M_p, d1, avg_loss, points_0, points_1, pretrain = True):
+def loss_attack_per_sample(M_target, M_p, avg_loss, points_0, points_1, pretrain = True):
+    """
+    Input:
+            M_target: Target model
+            M_p: Pretrained model
+            avg_loss: Average loss of the target model on the auxiliary data D_aux to which points_0 and points_1 belongs.
+            points_0: Images on which the shadow models' belonging to D0 distribution had lower loss difference.
+            points_1: Images on which the shadow models' belonging to D1 distribution had lower loss difference.
+    
+    Output: 
+            0, if average of element-wise substraction between loss on points_0 and avg_loss is lower.
+            1, if average of element-wise substraction between loss on points_1 and avg_loss is lower.
+    """
     M_target.cuda()
-    assert (any(points_0 != points_1))
-    loss_0 = get_loss_per_data_sample(M_target, M_p, d1, points_0, pretrain)
-    loss_1 = get_loss_per_data_sample(M_target, M_p, d1, points_1, pretrain)
+    assert (points_0 != points_1), "Similar images present"
+    loss_0 = np.array(get_loss_per_data_sample(M_target, M_p, points_0, pretrain))
+    loss_1 = np.array(get_loss_per_data_sample(M_target, M_p, points_1, pretrain))
     M_target.cpu()
-    assert ((np.mean(np.array(loss_0) - avg_loss.item()) <= np.mean(np.array(loss_1) - avg_loss.item())) == (np.mean(np.array(loss_0)) <= np.mean(np.array(loss_1))))
-    if np.mean(np.array(loss_0) - avg_loss.item()) <= np.mean(np.array(loss_1) - avg_loss.item()):
+    # TODO: Figure out a better conditional statement to estimate difference
+    # assert ((np.mean(abs(np.array(loss_0) - avg_loss.item())) <= np.mean(abs(np.array(loss_1) - avg_loss.item()))) == (np.mean(np.array(loss_0)) <= np.mean(np.array(loss_1))))
+    # if len(np.where(loss_0 <= loss_1)[0]) <= len(np.where(loss_0 >= loss_1)[0]):
+    if np.mean(abs(np.array(loss_0) - avg_loss.item())) <= np.mean(abs(np.array(loss_1) - avg_loss.item())):
+    # if np.mean(loss_0) <= np.mean(loss_1):
         return 0
     else:
         return 1
@@ -202,12 +217,10 @@ def main():
 
     M_target = copy.deepcopy(pretrain_model)
     vic_models = [copy.deepcopy(M_target) for _ in range(40)]
-    # vic_models_5 = [copy.deepcopy(M_target) for _ in range(10)]
-    # vic_models_8 = [copy.deepcopy(M_target) for _ in range(10)]
     adv_models_5_M = [copy.deepcopy(M_target) for _ in range(90)]
     adv_models_8_M = [copy.deepcopy(M_target) for _ in range(90)]
 
-    prop_1, prop_2 = 0.2, 0.5
+    prop_1, prop_2 = 0.5, 0.8
     br = BinaryRatio(prop_1, prop_2)
 
     path_compressed_vic5 = f'/p/compressionleakage/logs/Compressed/compression_cv/models/celeba/resnet18/victim/Male/{prop_1}/ft_train_0.5000'
@@ -257,20 +270,26 @@ def main():
     mean_0 = threshold[:][1]
     mean_1 = threshold[:][2]
     # index = min(len(np.where((mean_0-mean_1) <= -0.5)[0]), len(np.where((mean_0-mean_1) >= 0.5)[0]))
-    index = int(0.05 * len(mean_0))
+    index = int(0.015 * len(mean_0))
     ordering = threshold[:][-1]
     points_0 = ordering[:index]
     points_1 = ordering[-index:]
     threshold = threshold[:][0]
 
-    get_plot(range(len(mean_0)), y = (mean_0-mean_1), y1 = mean_0, y2 = mean_1, scatter= True, title=None, xlabel = None, ylabel="Mean loss of shadow models per image", save_path=f"loss_adv_60_{prop_1*10}_{prop_2*10}_data_{p2*100}.png", pdf = True, label_0 = f'Distribution {prop_1 *100} males', label_1= f'Distribution {prop_2 *100} males')
+    img_0 = SubsetDataset(d_aux_2.dataset, points_0)
+    img_1 = SubsetDataset(d_aux_2.dataset, points_1)
+    img_0_loader = DataLoader(img_0, batch_size=BATCH_SIZE, shuffle=False)
+    img_1_loader = DataLoader(img_1, batch_size=BATCH_SIZE, shuffle=False)
+
+    get_plot(range(len(mean_0)), y = (mean_0-mean_1), y1 = mean_0, y2 = mean_1, scatter= True, title=None, xlabel = 'Image', ylabel="Mean loss of shadow models per image", save_path=f"loss_adv_60_{int(prop_1*100)}_{int(prop_2*100)}_data_{int(p2*100)}.png", pdf = True, label_0 = f'Distribution {int(prop_1 *100)}% males', label_1= f'Distribution {int(prop_2 *100)}% males')
 
     # exit()
     
     result_JI = []
+    # avg_loss = get_loss_pretrain(M_target, pretrain_model, d_aux_2)
+    avg_loss = pretrain_loss(pretrain_model, d_aux_2)
     for i in vic_progress:
-        avg_loss = get_loss_pretrain(M_target, pretrain_model, d_aux_2)
-        res = loss_attack_per_sample(vic_models_[i], pretrain_model, d_aux_2, avg_loss, points_0, points_1, p)
+        res = loss_attack_per_sample(vic_models_[i], pretrain_model, avg_loss, img_0_loader, img_1_loader, p)
         result_JI.append(res)
     
         vic_progress.set_description(f'Victim {i+1} | Avg_loss: {avg_loss} | Inference: {result_JI}')

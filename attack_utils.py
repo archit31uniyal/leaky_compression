@@ -3,6 +3,22 @@ import os
 from analyze_outputs import *
 from simple_parsing import ArgumentParser
 from pathlib import Path
+from torch.utils.data import Dataset
+
+class SubsetDataset(Dataset):
+    def __init__(self, original_dataset, indices):
+        self.original_dataset = original_dataset
+        self.indices = indices
+
+    def __getitem__(self, index):
+        # Fetch the image at the corresponding index
+        return self.original_dataset[self.indices[index]]
+
+    def __len__(self):
+        # Return the number of images in the subset
+        return len(self.indices)
+    
+
 
 def load_from_pickle(path):
     assert os.path.exists(path), f"Path: {path}, not found"
@@ -34,15 +50,33 @@ def get_loss_pretrain(M_target, M_p, d_aux):
     return loss_diff/len(d_aux) 
 
 @torch.no_grad()
-def get_loss_per_sample(M, M_pretrain, d_aux, pretrain = False):
-    loss =  [] 
-    prop = []
+def pretrain_loss(M_p, d_aux):
     criterion = nn.CrossEntropyLoss()
+    loss_p = 0
+    loss_diff = 0
     # progress = tqdm(enumerate(d_aux))
-    for img, label, p in tqdm(d_aux, desc = 'Auxilary data', total = len(d_aux)):
+    for img, label, _ in d_aux:
         img = img.cuda()
         label = label.cuda()
-        p = p.cuda()
+        loss_p = criterion(M_p(img), label)
+
+        loss_diff += loss_p
+
+        # progress.set_description(f'Aux Data {i}/{len(d_aux)}')
+    
+    return loss_diff/len(d_aux) 
+
+
+@torch.no_grad()
+def get_loss_per_sample(M, M_pretrain, d_aux, pretrain = False):
+    loss =  [] 
+    # prop = []
+    criterion = nn.CrossEntropyLoss()
+    # progress = tqdm(enumerate(d_aux))
+    for img, label, _ in d_aux:
+        img = img.cuda()
+        label = label.cuda()
+
         loss_vic = criterion(M(img), label)
         if pretrain:
             loss_p = criterion(M_pretrain(img), label)
@@ -50,35 +84,35 @@ def get_loss_per_sample(M, M_pretrain, d_aux, pretrain = False):
             # loss.append((loss_vic - loss_p).cpu())
         else:
             loss.append(loss_vic.cpu())
-        prop.append(p)
+        # prop.append(p)
         img.cpu()
         label.cpu()
-        p.cpu()
+        # p.cpu()
     
-    return loss, prop
+    return loss
 
 @torch.no_grad()
-def get_loss_per_data_sample(M, M_pretrain, d_aux, points, pretrain = False):
-    loss, property =  [], []
+def get_loss_per_data_sample(M, M_pretrain, points, pretrain = False):
+    loss = []
     criterion = nn.CrossEntropyLoss()
     # progress = tqdm(enumerate(d_aux))
-    for i, (img, label, _) in tqdm(enumerate(d_aux), desc = 'Inference data', total = len(d_aux)):
-        if i in points:
+    for i, (img, label, _) in tqdm(enumerate(points), desc = 'Generating loss values', total = len(points)):
+        # if i in points:
             # img = img.cuda()
-            img = img.cuda()
-            # label = label.cuda()
-            label = label.cuda()
-            loss_vic = criterion(M(img), label)
-            if pretrain:
-                loss_p = criterion(M_pretrain(img), label)
-                loss.append(abs(loss_vic.item() - loss_p.item()))
-                # loss.append((loss_vic - loss_p).cpu())
-            else:
-                loss.append(loss_vic.item())
+        img = img.cuda()
+        # label = label.cuda()
+        label = label.cuda()
+        loss_vic = criterion(M(img), label)
+        if pretrain:
+            loss_p = criterion(M_pretrain(img), label)
+            loss.append(abs(loss_vic.item() - loss_p.item()))
+            # loss.append((loss_vic - loss_p).cpu())
+        else:
+            loss.append(loss_vic.item())
 
-            # property.append(p[0].item())
-            img.cpu()
-            label.cpu()
+        # property.append(p[0].item())
+        img.cpu()
+        label.cpu()
             
     return loss
 
@@ -153,15 +187,14 @@ def loss_pretrain(M_target, M_pretrain, d_aux_1, d_aux_2, pretrain= True):
         return 1
 
 @torch.no_grad()
-def get_adv_model_loss(models, M_p, d_aux, pretrain):
+def get_adv_model_loss(models, M_p, d_aux, title = "", pretrain: bool = True):
     loss_models, prop_models = [], []
-    for model in models:
+    for model in tqdm(models, desc = title, total = len(models)):
         model.eval()
-        loss, prop = get_loss_per_sample(model, M_p, d_aux, pretrain) 
+        loss= get_loss_per_sample(model, M_p, d_aux, pretrain) 
         loss_models.append(loss)
-        prop_models.append(prop)
-    
-    return loss_models, prop_models
+
+    return loss_models
 
 def adv_loss_thresh(M_target, M_p, threshold_0, d1, points, pretrain = True):
     M_target.cuda()
@@ -209,10 +242,10 @@ def get_thresholds(adv_M0, adv_M1, M_p, d_aux, pretrain = True):
     loss_0, loss_1 = [], []
     M_p.eval()
 
-    loss_0, _ = get_adv_model_loss(adv_M0, M_p, d_aux, pretrain)
+    loss_0 = get_adv_model_loss(adv_M0, M_p, d_aux, title = "Generating loss values M0", pretrain = pretrain)
     mean_loss_0 = np.mean(loss_0, axis = 0)
 
-    loss_1, _ = get_adv_model_loss(adv_M1, M_p, d_aux, pretrain)
+    loss_1 = get_adv_model_loss(adv_M1, M_p, d_aux, title = "Generating loss values M1", pretrain = pretrain)
     mean_loss_1 = np.mean(loss_1, axis = 0)
     
     # points = range(len(mean_loss_0))[len(mean_loss_0)//2:]
